@@ -1,5 +1,5 @@
 # Evaluation Analysis
-This repository contains the scripts for following fatures:-
+This repository contains the scripts with following fatures:-
 - Evaluating the performance of 2D Object Detection models. 
 - Plotting the Precision and Reclcation curves.
 - Comparing the AP values of all objects classes.
