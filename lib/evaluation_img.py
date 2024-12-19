@@ -21,6 +21,7 @@ class Img_TestEval:
 
         # For storing results
         self.predict_results = defaultdict(dict)
+        self.gt_data = defaultdict(dict)
         self.AP_sequence = dict()
         self.AP_data_seq = dict()
 
@@ -30,22 +31,15 @@ class Img_TestEval:
         else:
             self.save_dir=args.save_dir
 
+        # Directory for saving data
+        if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
+
         # Flags
         self.test_flag = False
         self.val_flag = False
 
-        # Read files
-        self.img_files=self.read_data()
-        
-        # Actions:
-        # Sanity check
-        if len(self.img_files) > 0:
-            print(f"[INFO]: {len(self.img_files)} Images found")
-        else:
-            assert len(self.img_files) > 0, "No images found"
-        
-        # Directory for saving data
-        if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
+        # Read image files and Gt annotation files
+        self.read_data()
 
     def read_data(self) -> list:
         """Read the images"""
@@ -55,11 +49,21 @@ class Img_TestEval:
             glob.glob(os.path.join(self.args.image_dir,"*.png")),
             # key=lambda x: x.split(os.sep)[-1]  # Sort the images as per their name
             )
+        
+        # Sanity check
+        if len(self.img_files) > 0:
+            print(f"[INFO]: {len(self.img_files)} Images found")
+        else:
+            assert len(self.img_files) > 0, "No images found"
+        
+        # Annotation encoder and decoders
+        class_encoder, class_decoder = utils_eval.class_encoder_and_decoder(self.args.model_name)
+
+        # Load GT annotations
+        self.gt_data = utils_eval.parse_gt_jsons(self.args.ann_dir, class_encoder, class_decoder)
 
         # reset results
         self.reset_test_val()  # reset results
-
-        return self.img_files
     
     def inference(self):
         pass
@@ -191,12 +195,6 @@ class Img_TestEval:
             save_path (str, optional): path for saving the figure". Defaults to None.
             conf_thres (float, optional): Threshold for filtering predictions based on network confidence. Defaults to 0.0.
         """
-
-        # Annotation encoder and decoders
-        class_encoder, class_decoder = utils_eval.class_encoder_and_decoder(self.args.model_name)
-
-        # Load GT
-        self.gt_data = utils_eval.parse_gt_jsons(self.args.ann_dir, class_encoder, class_decoder)
 
         visualization.viz_predictions(
             gt_data= self.gt_data,
