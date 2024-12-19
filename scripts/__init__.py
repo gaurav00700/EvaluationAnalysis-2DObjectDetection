@@ -4,4 +4,4 @@ import os, sys
 
 # Entry point
 root_dir_path = os.path.abspath(os.path.join(__file__, "../.."))
-sys.path.append(parent_dir)
+sys.path.append(root_dir_path)
