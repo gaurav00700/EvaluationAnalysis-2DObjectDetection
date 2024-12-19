@@ -1,6 +1,4 @@
 import os, sys
-parent_dir = os.path.abspath(os.path.join(__file__, "../.."))
-sys.path.append(parent_dir)  # add repo entrypoint to python path
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
