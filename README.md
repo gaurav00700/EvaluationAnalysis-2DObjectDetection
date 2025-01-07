@@ -1,7 +1,7 @@
 # Evaluation Analysis
 This repository contains the scripts with following fatures:-
 - Evaluating the performance of 2D Object Detection models. 
-- Plotting the Precision and Reclcation curves.
+- Plotting the Precision and Recall curves.
 - Comparing the AP values of all objects classes.
 - OpenCV visualizer for visualizing the detections and ground truths of dataset.
 
