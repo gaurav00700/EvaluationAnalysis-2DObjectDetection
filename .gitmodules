@@ -1,0 +1,6 @@
+[submodule "submodules/YOLOv9"]
+	path = submodules/YOLOv9
+	url = https://github.com/MultimediaTechLab/YOLO.git
+[submodule "submodules/YOLOv11"]
+	path = submodules/YOLOv11
+	url = https://github.com/ultralytics/ultralytics.git

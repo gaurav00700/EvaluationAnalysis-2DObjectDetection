@@ -1,1 +1,6 @@
 *__pycache__
+*.pt
+*runs
+data/output
+!data/output/.gitkeep
+*venv*
