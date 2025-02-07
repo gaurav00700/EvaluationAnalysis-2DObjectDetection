@@ -1,6 +1,5 @@
 import os, sys
-parent_dir = os.path.abspath(os.path.join(__file__, "../.."))
-sys.path.append(parent_dir)  # add repo entrypoint to python path
+sys.path.append(os.path.abspath(os.path.join(__file__, "../..")))  # add repo entrypoint to python path
 import numpy as np
 import glob
 from collections import defaultdict
