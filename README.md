@@ -23,7 +23,7 @@ conda create -n eval_img python=3.10 -y
 conda activate eval_img
 
 # Install requirements as per the framework (below is example of YOLOv9)
-pip install -r ./submodule/YOLOv9/requirements.txt
+pip install -r ./submodules/YOLOv9/requirements.txt
 
 ```
 
