@@ -3,21 +3,62 @@ parent_dir = os.path.abspath(os.path.join(__file__, "../.."))
 sys.path.append(parent_dir)  # add repo entrypoint to python path
 import numpy as np
 import glob
-import matplotlib.pyplot as plt
-import cv2
-import argparse
 from collections import defaultdict
 import tqdm
+from PIL import Image 
 import json
 import time
+import torch
+from pathlib import Path
 from typing import Literal, Union
-from lib import utils_eval, visualization
+from lib import utils_eval, visualization, tools
+
+# YOLO related Imports 
+try:
+    sys.path.append(os.path.join(parent_dir, 'submodules', 'YOLOv9'))  # add repo entrypoint to python path
+    import hydra
+    from lightning import Trainer
+    from yolo.config.config import Config
+    from yolo.tools.solver import InferenceModel
+    from yolo.utils.logging_utils import setup
+    from yolo import (
+        AugmentationComposer,
+        PostProcess,
+        create_converter,
+        create_model,
+        draw_bboxes,
+    )
+except:
+    print("Failed to import YOLO v9 packages")
+
+def model_class(model:Literal["yolo2d_v11", "yolo2d_v9", "mmdet2d"]):
+    """Select the model class based on model name"""
+    
+    # Detection frameworks
+    detectors = {
+        "yolo2d_v11":YOLOv11_detection,
+        "yolo2d_v9":YOLOv9_detection,
+        "mmdet2d":MMdet_detection,
+    }
+
+    return detectors[model]
 
 class Img_TestEval:
-    def __init__(self, args) -> None:
+    def __init__(self, args, **kwargs) -> None:
 
         self.args = args
         self.model = None # initialize the model
+        self.device = args.device
+        
+        # expand kwargs
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+        if not getattr(self, 'bbox_area_thres', None):
+            print("[WARN] 'bbox_area_thres' not found, falling back to default values: {}")
+            self.bbox_area_thres = {}
+        if not getattr(self, 'img_HxW', None):
+            print(f"[WARN] 'img_HxW' not found, falling back to default values: {(540, 960)}")
+            self.img_HxW=(540, 960)
 
         # For storing results
         self.predict_results = defaultdict(dict)
@@ -31,15 +72,22 @@ class Img_TestEval:
         else:
             self.save_dir=args.save_dir
 
-        # Directory for saving data
-        if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
-
         # Flags
         self.test_flag = False
         self.val_flag = False
 
         # Read image files and Gt annotation files
         self.read_data()
+        
+        # Actions:
+        # Sanity check
+        if len(self.img_files) > 0:
+            print(f"[INFO]: {len(self.img_files)} Images found")
+        else:
+            assert len(self.img_files) > 0, "No images found"
+        
+        # Directory for saving data
+        if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
 
     def read_data(self) -> list:
         """Read the images"""
@@ -50,18 +98,19 @@ class Img_TestEval:
             # key=lambda x: x.split(os.sep)[-1]  # Sort the images as per their name
             )
         
-        # Sanity check
-        if len(self.img_files) > 0:
-            print(f"[INFO]: {len(self.img_files)} Images found")
-        else:
-            assert len(self.img_files) > 0, "No images found"
-        
         # Annotation encoder and decoders
         class_encoder, class_decoder = utils_eval.class_encoder_and_decoder(self.args.model_name)
 
         # Load GT annotations
         self.gt_data = utils_eval.parse_gt_jsons(self.args.ann_dir, class_encoder, class_decoder)
 
+        # Enrich GT with WBA flag
+        self.gt_data = utils_eval.WBA_check(
+            data=self.gt_data, 
+            bbox_area_thres=self.bbox_area_thres,
+            img_HxW=self.img_HxW
+            )
+        
         # reset results
         self.reset_test_val()  # reset results
     
@@ -102,7 +151,7 @@ class Img_TestEval:
         if file_path is None:
             file_path = os.path.join(self.save_dir,"prediction_results.json")
         with open(file_path, "w") as f:
-            json.dump(self.predict_results, f, indent=4, cls=utils_eval.NpEncoder)
+            json.dump(self.predict_results, f, indent=4, cls=tools.NpEncoder)
 
         print(f"Prediction results saved at: {file_path}")
 
@@ -110,6 +159,7 @@ class Img_TestEval:
         self,
         nms_thres:float=0.5,
         score_thres:float=0.0,
+        WBA_filter:bool=False,
         save_result:bool=True,
         vis_AP:bool=True,
     ) -> None:
@@ -118,14 +168,18 @@ class Img_TestEval:
         Args:
             nms_thres (float, optional): NMS threshold for iou. Defaults to 0.5.
             score_thres (float, optional): Threshold for prediction score. Defaults to 0.0.
+            WBA_filter (bool, optional): Flag for filtering Bboxes as per WBA criteria. Defaults to False.
             save_result (bool, optional): Save validation result. Defaults to True.
             viz_AP (bool, optional): Visualize AP plot. Defaults to True.
         """
         assert self.test_flag, "Run prediction() before validating"
 
+        if self.args.WBA_filter:
+            WBA_filter = True
+
         self.AP_sequence, self.AP_data_seq = utils_eval.validate(
-            gt_dir=self.args.ann_dir,  # ground truth annotations json
-            pred_data=self.predict_results,  # predictions
+            gt= utils_eval.rm_non_WBA(self.gt_data) if WBA_filter else self.gt_data,  # ground truth annotations json
+            pred_data=utils_eval.rm_non_WBA(self.predict_results) if WBA_filter else self.predict_results,  # predictions
             nms_method='iou',
             nms_thres=nms_thres,  # non-max suppression threshold for iou
             score_thres=score_thres,
@@ -142,7 +196,6 @@ class Img_TestEval:
         if vis_AP:
             self.viz_pres_recall()
         
-
     def save_validation(self, file_path:str= None) -> None:
         """Save validation results to json file
 
@@ -172,7 +225,7 @@ class Img_TestEval:
         
         # Save data to json file
         with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(val_results, f, indent=4 , cls=utils_eval.NpEncoder)
+            json.dump(val_results, f, indent=4 , cls=tools.NpEncoder)
 
         print(f"Validation results saved at: {file_path}")
 
@@ -182,7 +235,7 @@ class Img_TestEval:
         # Annotation encoder and decoders
         class_encoder, class_decoder = utils_eval.class_encoder_and_decoder(self.args.model_name)
 
-        if len(self.AP_sequence.keys()) > 0:
+        if len(self.AP_sequence) > 0:
             visualization.viz_PrecisionRecall(self.AP_sequence, class_decoder, save_plot, self.save_dir)
         
         else:
@@ -195,6 +248,7 @@ class Img_TestEval:
             save_path (str, optional): path for saving the figure". Defaults to None.
             conf_thres (float, optional): Threshold for filtering predictions based on network confidence. Defaults to 0.0.
         """
+        save_path= self.save_dir if save_path is None else save_path
 
         visualization.viz_predictions(
             gt_data= self.gt_data,
@@ -223,17 +277,16 @@ class Img_TestEval:
         self.val_flag = False
         print("==>Reset prediction, validation and visualization data")
 
-
-class YOLO_detection(Img_TestEval):
+class YOLOv11_detection(Img_TestEval):
     """YOLO Object detection"""
 
-    def __init__(self, args):
-        super().__init__(args)  # Initialize Img_TestEval class
+    def __init__(self, args, **kwargs):
+        super().__init__(args,**kwargs)  # Initialize Img_TestEval class
         
         # YOLO related Imports
         try: 
             from ultralytics import YOLO
-        except: 
+        except ValueError: 
             print("YOLO not found")
 
         self.model = YOLO(args.checkpoint) # initialize the model
@@ -263,19 +316,130 @@ class YOLO_detection(Img_TestEval):
                 bboxes_2d_xyxy_pred, 
                 labels_2d_pred
                 ):
-                detection.append(
-                    {
+                ann = {
                         "score": score.tolist(), 
                         "pos": pos.tolist(), 
                         "pos_xyxy":pos_xyxy.tolist(),
+                        "bbox_area": tools.bbox2d_area(pos.tolist()),
                         "cls": int(cls),
                         "cls_name":results.names[int(cls)],
                     }
-                )
+                
+                # Enrich prediction with WBA flag
+                ann = utils_eval.WBA_check(
+                        data={'temp':[ann]}, 
+                        bbox_area_thres=self.bbox_area_thres,
+                        img_HxW=self.img_HxW
+                        )['temp'][0]
+                
+                detection.append(ann)
 
             # Add predictions to dict
             self.predict_results[str(frame_name)] = detection
 
+class YOLOv9_detection(Img_TestEval):
+    """YOLOv9 Object detection"""
+
+    def __init__(self, args, **kwargs):
+        super().__init__(args,**kwargs)  # Initialize Img_TestEval class
+
+        # Load model configurations using hydra
+        hydra.initialize(config_path="../data/in/yolov9/config", version_base= None)
+        self.cfg: Config = hydra.compose(config_name="config", overrides=[]) # change the model name in the config file
+
+        # Overrides configs
+        self.cfg.weight = args.checkpoint
+        self.cfg.task.data.source = args.image_dir
+        self.cfg.out_path = self.save_dir
+        
+        # initialize the model and trainer
+        self.trainer, self.model = self.load_model(self.cfg) 
+        
+        # Inference
+        # self.trainer.predict(self.model)
+
+    def load_model(self, cfg: dict):        
+
+        callbacks, loggers, save_path = setup(cfg)
+
+        trainer = Trainer(
+            accelerator="auto",
+            max_epochs=getattr(cfg.task, "epoch", None),
+            precision='bf16-mixed', #"16-mixed",
+            callbacks=callbacks,
+            logger=loggers,
+            log_every_n_steps=1,
+            gradient_clip_val=10,
+            gradient_clip_algorithm="value",
+            deterministic=True,
+            enable_progress_bar=not getattr(cfg, "quite", False),
+            default_root_dir=save_path,
+        )
+
+        model = InferenceModel(cfg)
+        # trainer.predict(model)
+        return trainer, model
+
+    def inference(self):
+
+        # Setup the helpers
+        # self.trainer.predict(self.model)
+        transform = AugmentationComposer([], self.cfg.image_size)
+        converter = create_converter(self.cfg.model.name, self.model, self.cfg.model.anchor, self.cfg.image_size, self.device)
+        post_proccess = PostProcess(converter, self.cfg.task.nms)
+
+        # draw_bboxes(pil_image, pred_bbox, idx2label=self.cfg.dataset.class_list)
+
+        for img_file in tqdm.tqdm(self.img_files, desc="Predicting Images"):
+            
+            frame_name = os.path.basename(img_file).split(".")[0] # File name
+            pil_image = Image.open(img_file) # Load image
+            image, bbox, rev_tensor = transform(pil_image) # Transform the image
+            image = image.to(self.device)[None] # Move to device
+            rev_tensor = rev_tensor.to(self.device)[None]
+            
+            # Model inference
+            with torch.no_grad():
+                predict = self.model(image)
+                results = post_proccess(predict, rev_tensor) # pred_bbox
+
+                '''results (List of Lists/Tensors): Bounding boxes with [class_id, x_min, y_min, x_max, y_max],
+                    where coordinates are normalized [0, 1]'''
+            # draw_bboxes(pil_image, results, idx2label=cfg.dataset.class_list)
+            # if len(results) == 0:
+            #     continue
+
+            detection = list()
+            # if isinstance(results, list) or results.ndim == 3:
+            if results[0].shape[0] > 0:
+
+                # List of predictions
+                for bbox in results[0]:
+                    class_id, x_min, y_min, x_max, y_max, conf = map(float, bbox)
+                    pos_xyxy = [x_min, y_min, x_max, y_max]
+                    pos_xywh = tools.xyxy_to_xywh([x_min, y_min, x_max, y_max])
+
+                    ann = {
+                            "score": conf, 
+                            "pos": pos_xywh, 
+                            "pos_xyxy":pos_xyxy,
+                            "bbox_area": tools.bbox2d_area(pos_xywh),
+                            "cls": int(class_id),
+                            "cls_name":self.cfg.dataset.class_list[int(class_id)],
+                        }
+                    
+                    # Enrich prediction with WBA flag
+                    ann = utils_eval.WBA_check(
+                            data={'temp':[ann]}, 
+                            bbox_area_thres=self.bbox_area_thres,
+                            img_HxW=self.img_HxW
+                            )['temp'][0]
+                    
+                    detection.append(ann)
+
+            # Add predictions to dict
+            self.predict_results[str(frame_name)] = detection     
+            
 class MMdet_detection(Img_TestEval):
     """MMdetection Object detection"""
 
@@ -319,15 +483,15 @@ class MMdet_detection(Img_TestEval):
                 bboxes_2d_xyxy_pred, 
                 labels_2d_pred
                 ):
-                detection.append(
-                    {
+                ann = {
                         "score": score.tolist(), 
                         "pos": pos.tolist(), 
                         "pos_xyxy":pos_xyxy.tolist(),
+                        "bbox_area": tools.bbox2d_area(pos.tolist()),
                         "cls": int(cls),
                         "cls_name":results.names[int(cls)],
                     }
-                )
+                detection.append(ann)
 
             # Add predictions to dict
             self.predict_results[str(frame_name)] = detection
