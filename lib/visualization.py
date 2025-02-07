@@ -29,7 +29,9 @@ def viz_PrecisionRecall(data_dict: dict, class_decodings: dict, save_plot: bool 
             ax1.plot(val['recall'], 
                     val['precision'], 
                     label=f"{class_decodings[cls]}")
-    
+    ax1.set_xlim(0.0, 1.01)
+    ax1.set_ylim(0.0, 1.05)
+    ax1.grid(True)
     ax1.legend(fontsize=7, loc='lower right')
     ax1.set_xlabel('Recall')
     ax1.set_ylabel('Precision')
@@ -49,6 +51,7 @@ def viz_PrecisionRecall(data_dict: dict, class_decodings: dict, save_plot: bool 
     # ax2.bar(class_labels, ap_values)
     bars = ax2.bar(class_labels, ap_values)
     bars[-1].set_color('orange') # Color the mAP bar in orange
+    ax2.set_ylim(0.0, 1.05)
     ax2.set_xlabel('Obj Class')
     ax2.set_ylabel('AP')
     ax2.set_title("AP of Each Class and mAP")
