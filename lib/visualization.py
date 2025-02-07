@@ -1,14 +1,15 @@
-import os
-import time
-from datetime import datetime
+import os, sys
+parent_dir = os.path.abspath(os.path.join(__file__, "../.."))
+sys.path.append(parent_dir)  # add repo entrypoint to python path
 import numpy as np
-import open3d as o3d
 import cv2
-import pandas as pd
-import matplotlib as mpl
 import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
-from matplotlib.patches import Rectangle
+import matplotlib.patches as patches
+import json
+import glob
+import argparse
+from typing import Union, Literal
+from lib import utils_eval, tools
 
 def viz_PrecisionRecall(data_dict: dict, class_decodings: dict, save_plot: bool = True, save_path: str = None):
     """Precision and recall visualization
@@ -84,7 +85,8 @@ def viz_predictions(
         pred_data:dict,
         imgs_path:list,
         save_path:str, 
-        conf_thres:float= 0.0
+        conf_thres:float= 0.0,
+        **kwargs
         ) -> None:
         """Visualize predictions bbox with image using OpenCV
 
@@ -108,6 +110,9 @@ def viz_predictions(
                 "============================End==========================",
                 sep="\n"
             )
+        
+        # Params
+        cL_offset = kwargs.get('cL_offset',50)
         color_gt= [255, 0, 0]
         color_pred= [0, 0, 255]
         current_idx = 0  # Start at the first image
@@ -120,6 +125,7 @@ def viz_predictions(
             # Read image
             img=cv2.imread(img_path)
             img=cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            H, W, C = img.shape # 540 x 960
 
             # Draw bounding boxes and display the class and confidence for Pred
             if show_pred and img_name in pred_data:
@@ -145,11 +151,16 @@ def viz_predictions(
                             color=color_pred, 
                             thickness=1
                         )
+
+                        # Draw the cross inside the bounding box
+                        if ('WBA' in pred) and (not pred['WBA']):
+                            cv2.line(img, (x1, y1), (x2, y2), color_pred, 1)  # top-left to bottom-right
+                            cv2.line(img, (x1, y2), (x2, y1), color_pred, 1)  # bottom-left to top-right
                         
                         # Add label on the image
                         cv2.putText(
                             img=img, 
-                            text=f"Class: {pred['cls_name']}, Conf: {pred['score']:.2f}", 
+                            text=f"Cls: {pred['cls_name']}, Conf: {pred['score']:.2f}, Area: {int(pred['bbox_area'])}", 
                             org=(x1, y1 - 10), 
                             fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                             fontScale=0.5, 
@@ -179,11 +190,16 @@ def viz_predictions(
                             color=color_gt, 
                             thickness=1
                         )
+
+                        # Draw the cross inside the bounding box
+                        if ('WBA' in gt) and (not gt['WBA']):
+                            cv2.line(img, (x1, y1), (x2, y2), color_gt, 1)  # top-left to bottom-right
+                            cv2.line(img, (x1, y2), (x2, y1), color_gt, 1)  # bottom-left to top-right
                         
                         # Add label on the image
                         cv2.putText(
                             img=img, 
-                            text=f"Class: {gt['cls_name']}", 
+                            text=f"Cls: {gt['cls_name']}, Area: {int(gt['bbox_area'])}", 
                             org=(x1, y1 - 10), 
                             fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
                             fontScale=0.5, 
@@ -192,11 +208,16 @@ def viz_predictions(
                         )
                 else:
                     print(f"[WARN] No Ground truth data for image '{img_path.split(os.sep)[-1]}'")
-
             
+            # Draw centerline of Cartesian plane
+            cv2.line(img, (W//2, 0), (W//2, H), [0,0,0], 1, cv2.LINE_AA) # Y-Y'
+            # cv2.line(img, (0, H//2), (W, H//2), [0,0,0], 1, cv2.LINE_AA) # X-X'
+            cv2.line(img, (W//2-cL_offset, 0), (W//2-cL_offset, H), [0,0,0], 1) # Negative offset Y-Y'
+            cv2.line(img, (W//2+cL_offset, 0), (W//2+cL_offset, H), [0,0,0], 1) # Positive offset Y-Y'
+
             # Add labels for Prediction and Ground Truth
-            cv2.putText(img, 'Prediction', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_pred, 1)
-            cv2.putText(img, 'Ground Truth', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_gt, 1)
+            cv2.putText(img, 'Prediction', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_pred, 2)
+            cv2.putText(img, 'Ground Truth', (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_gt, 2)
             
             # Show the image
             cv2.imshow('Detection', img)
@@ -251,21 +272,19 @@ def viz_predictions(
         # Close all OpenCV windows
         cv2.destroyAllWindows()
 
-
 if __name__ == '__main__':
-    
-    import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--ann_dir', type=str, help='ground truth annotation .json file path')
     parser.add_argument('--pred_dir', type=str, help='prediction .json file path')
     parser.add_argument('--nms_thres', type=float, default=0.5, help='NMS threshold value')
     parser.add_argument('--score_thres', type=float, default=0.0, help='Prediction Score threshold')
-    parser.add_argument('--model_name', type=str, choices=["yolo2d","mmdet2d"], default="yolo2d", help='Model name to use')
+    parser.add_argument('--model_name', type=str, choices=["yolo2d_v11","mmdet2d"], default="yolo2d_v11", help='Model name to use')
 
     args = parser.parse_args()
 
-    args.ann_dir= "Add dir here"
-    args.pred_dir= "Add dir here"
+    args.ann_dir="C:\\Users\\VL6CD7D\\Volkswagen AG\\CG Data Analytics T3-HF - General\\Austausch\\Internship-Gaurav\\GDC_ImageDetection\\data\\GDC images\\20241114-20241120_v1"
+    args.pred_dir="data\\out\\1734075259\\prediction_results.json"
 
     # Annotation encoder and decoders
     class_encoder, class_decoder = utils_eval.class_encoder_and_decoder(args.model_name)
@@ -290,3 +309,48 @@ if __name__ == '__main__':
         save_path= os.path.dirname(args.pred_dir),
         conf_thres= 0.0,
     )
+
+def plot_object_count(obj_count_gt:dict, obj_count_pred:dict, save_plot: bool=True, save_path:Union[None, str]= None):
+    """Plot showing the object classes counts between Ground Truth and Predictions
+
+    Args:
+        obj_count_gt (dict): Dictionary containing object counts for ground truth
+        obj_count_pred (dict): Dictionary containing object counts for predictions
+        save_plot (bool, optional): Flag to save the plot. Defaults to True.
+        save_path (Union[None, str], optional): Path for saving the plot. Defaults to None.
+    """
+    # Bar positions
+    labels = list(obj_count_gt.keys())
+    x = np.arange(len(labels))  # the label locations
+    width = 0.35  # the width of the bars
+
+    fig, ax = plt.subplots()
+    bars_gt = ax.bar(x - width/2, obj_count_gt.values(), width, label='GT')
+    bars_pred = ax.bar(x + width/2, [obj_count_pred[k] for k in labels], width, label='Pred')
+
+    # Add text for labels, title and custom x-axis tick labels, etc.
+    ax.set_xlabel('Object class')
+    ax.set_ylabel('Object count')
+    ax.set_title('Object class count')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend()
+
+    # Add labels on top of the bars
+    for bar in bars_gt:
+        yval = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2, yval + 0.01, round(yval, 2), ha='center', va='bottom')
+    for bar in bars_pred:
+        yval = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2, yval + 0.01, round(yval, 2), ha='center', va='bottom')
+
+    plt.xticks(rotation=45)
+    fig.tight_layout()
+
+    # Save plots
+    if save_plot:
+        save_path= "Object_cls_plot.png"if save_path is None else save_path
+        plt.savefig(save_path)
+        print(f"[INFO] Plot saved to: {save_path}")
+
+    plt.show()
