@@ -1,63 +1,13 @@
 import numpy as np
+import argparse
 import os
 import glob
 import json
 import copy
-import matplotlib; matplotlib.use('Qt5Agg')  # Set the backend to 'Qt5Agg'
 import matplotlib.pyplot as plt
 from collections import defaultdict
 from typing import Literal, Union
-
-class NpEncoder(json.JSONEncoder):
-    """convert nested numpy to nested list
-
-    Args:
-        json (json class): Extensible JSON <http://json.org> encoder for Python data structures.
-    """
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        
-        return super(NpEncoder, self).default(obj)
-
-def xywh_to_xyxy(box):
-    """
-    Convert xywh format (center x, center y, width, height) to (x_min, y_min, x_max, y_max).
-
-    Args:
-        box (list or array): Bounding box in YOLO format [center_x, center_y, width, height]
-
-    Returns:
-        list: Bounding box in (x_min, y_min, x_max, y_max) format
-    """
-    center_x, center_y, width, height = box
-    x_min = center_x - (width / 2)
-    y_min = center_y - (height / 2)
-    x_max = center_x + (width / 2)
-    y_max = center_y + (height / 2)
-    
-    return [x_min, y_min, x_max, y_max]
-
-def xyxy_to_xywh(box):
-    """
-    Convert (x_min, y_min, x_max, y_max) format to xywh format (center x, center y, width, height).
-
-    Args:
-        box (list or array): Bounding box in (x_min, y_min, x_max, y_max) format
-
-    Returns:
-        list: Bounding box in YOLO format [center_x, center_y, width, height]
-    """
-    x_min, y_min, x_max, y_max = box
-    center_x = (x_min + x_max) / 2
-    center_y = (y_min + y_max) / 2
-    width = x_max - x_min
-    height = y_max - y_min
-    return [center_x, center_y, width, height]
+from lib import visualization, tools
 
 def parse_gt_jsons(dir:str, cls_encoder:dict, cls_decoder:dict) -> dict:
     """Parse annotations files
@@ -88,8 +38,9 @@ def parse_gt_jsons(dir:str, cls_encoder:dict, cls_decoder:dict) -> dict:
             pos_xyxy= sum(ann_data['points'], []) # (2,2) -> (1,4)                
             object.append(
                 {
-                    "pos": xyxy_to_xywh(pos_xyxy),
+                    "pos": tools.xyxy_to_xywh(pos_xyxy),
                     "pos_xyxy": pos_xyxy,
+                    "bbox_area": tools.bbox2d_area(tools.xyxy_to_xywh(pos_xyxy)),
                     "cls": cls_encoder[ann_data['label']],
                     "cls_name": ann_data['label'],
                 }
@@ -98,30 +49,37 @@ def parse_gt_jsons(dir:str, cls_encoder:dict, cls_decoder:dict) -> dict:
     
     return gt_data
 
-def calculate_iou(box1, box2):
-    """Calculate the Intersection over Union (IoU) of two bounding boxes."""
-    x1, y1, x2, y2 = box1
-    x1g, y1g, x2g, y2g = box2
+def WBA_check(data:dict, bbox_area_thres:dict, cL_offset:float=50.0, scale:float=0.1, img_HxW:tuple=(540,960))->dict:
+    """Enrich the Detection/GT data by adding flag of WBA relevant
 
-    # Calculate the (x, y)-coordinates of the intersection rectangle
-    xi1 = max(x1, x1g)
-    yi1 = max(y1, y1g)
-    xi2 = min(x2, x2g)
-    yi2 = min(y2, y2g)
+    Args:
+        data (dict): GT or Prediction data 
+        bbox_area_thres (dict): Threshold of different objects
+        cL_offset (float, optional): Y offset from center of image. Defaults to 50.0.
+        scale (float, optional): Scaling factor in bounding regions of offsets. Defaults to 0.1.
+        img_HxW (tuple, optional): Image size. Defaults to (540,960).
 
-    # Calculate the area of intersection rectangle
-    inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+    Returns:
+        Dict: Enriched data by adding WBA flag of each annotation
+    """
+    if len(bbox_area_thres) > 0:
+        for frame, anns in data.items():
+            for ann in anns:
+                scale_ = scale if abs(img_HxW[1]/2 - ann['pos'][0]) < cL_offset else 1
+                if ann['bbox_area'] > bbox_area_thres.get(ann['cls_name'], bbox_area_thres.get('other'))*scale_:
+                    ann["WBA"] = True
+                else:
+                    ann["WBA"] = False
+    return data
 
-    # Calculate the area of both the prediction and ground-truth rectangles
-    box1_area = (x2 - x1) * (y2 - y1)
-    box2_area = (x2g - x1g) * (y2g - y1g)
-
-    # Calculate the intersection over union by taking the intersection
-    # area and dividing it by the sum of prediction + ground-truth
-    # areas - the interesection area
-    iou = inter_area / float(box1_area + box2_area - inter_area)
-
-    return iou
+def rm_non_WBA(data:dict) -> dict:
+    """Remove non WBA annotations from data dict"""
+    if data:
+        for anns in data.values():
+            for ann in anns:
+                if "WBA" in ann and not ann['WBA']:
+                    anns.remove(ann)
+    return data
 
 def tp_mask_img(frame_value: dict, iou_thresh: float = 0.5) -> dict:
     """Calculates true positive for a given IoU threshold and prediction over a single frame for image data.
@@ -150,7 +108,7 @@ def tp_mask_img(frame_value: dict, iou_thresh: float = 0.5) -> dict:
 
     if ann_poses.shape[0]:
         for count, pred_pose in enumerate(pred_poses):
-            ious = np.array([calculate_iou(pred_pose, ann_pose) for ann_pose in ann_poses])
+            ious = np.array([tools.calculate_iou(pred_pose, ann_pose) for ann_pose in ann_poses])
             max_iou_idx = np.argmax(ious)  # index of the highest IoU
             
             if ious[max_iou_idx] >= iou_thresh:
@@ -193,10 +151,10 @@ def cal_ap(score: np.array, gt_no: int, true_pos: np.array):
 
     return ap, Precision, Recall
 
-def class_encoder_and_decoder(model_name:Literal['nuscenes, kitti', 'yolo2d']):
+def class_encoder_and_decoder(model_name:Literal['nuscenes, kitti', 'yolo2d_v11']):
     """Encoder and decoder as per model type
     Args:
-        model_name (Literal['nuscenes', 'kitti', 'yolo2d']): model_name name for pointpillars
+        model_name (Literal['nuscenes', 'kitti', 'yolo2d_v11']): model_name name for pointpillars
 
     Returns:
         _type_: dict of encoder and decoder of kitti
@@ -213,8 +171,17 @@ def class_encoder_and_decoder(model_name:Literal['nuscenes, kitti', 'yolo2d']):
     # Nuscene class encoding
     nus_classes=['car', 'truck', 'trailer', 'bus', 'construction_vehicle', 'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone', 'barrier']  
 
-    # Yolo2d class encoding as per COCO dataset
-    yolo2d_classes={0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus', 6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light', 10: 'fire hydrant', 11: 'stop sign', 12: 'parking meter', 13: 'bench', 14: 'bird', 15: 'cat', 16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow', 20: 'elephant', 21: 'bear', 22: 'zebra', 23: 'giraffe', 24: 'backpack', 25: 'umbrella', 26: 'handbag', 27: 'tie', 28: 'suitcase', 29: 'frisbee', 30: 'skis', 31: 'snowboard', 32: 'sports ball', 33: 'kite', 34: 'baseball bat', 35: 'baseball glove', 36: 'skateboard', 37: 'surfboard', 38: 'tennis racket', 39: 'bottle', 40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife', 44: 'spoon', 45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich', 49: 'orange', 50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut', 55: 'cake', 56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed', 60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse', 65: 'remote', 66: 'keyboard', 67: 'cell phone', 68: 'microwave', 69: 'oven', 70: 'toaster', 71: 'sink', 72: 'refrigerator', 73: 'book', 74: 'clock', 75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 79: 'toothbrush'}
+    # yolo2d_v11 class encoding as per COCO dataset
+    yolo2d_classes={
+        0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus', 6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light', 
+        10: 'fire hydrant', 11: 'stop sign', 12: 'parking meter', 13: 'bench', 14: 'bird', 15: 'cat', 16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow', 
+        20: 'elephant', 21: 'bear', 22: 'zebra', 23: 'giraffe', 24: 'backpack', 25: 'umbrella', 26: 'handbag', 27: 'tie', 28: 'suitcase', 29: 'frisbee', 
+        30: 'skis', 31: 'snowboard', 32: 'sports ball', 33: 'kite', 34: 'baseball bat', 35: 'baseball glove', 36: 'skateboard', 37: 'surfboard', 38: 'tennis racket', 39: 'bottle', 
+        40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife', 44: 'spoon', 45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich', 49: 'orange', 
+        50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut', 55: 'cake', 56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed', 
+        60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse', 65: 'remote', 66: 'keyboard', 67: 'cell phone', 68: 'microwave', 69: 'oven', 
+        70: 'toaster', 71: 'sink', 72: 'refrigerator', 73: 'book', 74: 'clock', 75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 79: 'toothbrush'
+        }
 
     #kitti class encoding for nuscenes
     if model_name == 'nuscenes':    
@@ -259,7 +226,7 @@ def class_encoder_and_decoder(model_name:Literal['nuscenes, kitti', 'yolo2d']):
             val_ = source_class_encodings[to_] if to_ in source_class_encodings else -1
             source_class_encodings.update({from_: val_})
 
-    elif model_name=='yolo2d':
+    elif model_name in ['yolo2d_v11', 'yolo2d_v9']:
         # Encoded classes
         source_class_encodings = {class_: i for i, class_ in yolo2d_classes.items()}
             
@@ -269,15 +236,9 @@ def class_encoder_and_decoder(model_name:Literal['nuscenes, kitti', 'yolo2d']):
         # Mapping of custom obj classes to COCO obj classes
         mapping = {
             'van': 'car',
-            'tractor': 'truck'
+            'tractor': 'truck',
+            'bus': 'truck',
         }
-        # mapping = {
-        #     'van': 'car',
-        #     # 'motorcycle': 'person',
-        #     'bicyclist': 'bicycle',
-        #     'motorcyclist': 'motorcycle',
-        #     'tractor': 'truck'
-        # }
 
         # update encoding as per custom classes
         for from_, to_ in mapping.items():
@@ -385,22 +346,22 @@ def cal_AP_img_sequence(
     return ap_clss, tp_data_seq
 
 def validate(
-        gt_dir:str, 
+        gt:Union[str,dict], 
         pred_data:Union[dict,str], 
         nms_method:Literal['iou']='iou',
         nms_thres=0.5, 
         score_thres=0.0, 
-        model_name:Literal['nuscenes','kitti','yolo2d']='yolo2d'
+        model_name:Literal['nuscenes','kitti','yolo2d_v11']='yolo2d_v11'
     ) -> dict:
     """Validation the predictions
 
     Args:
-        - gt_dir (str): Directory containing annotation files 
+        - gt (str | dict): Directory or dictionary containing annotation files 
         - pred_data (Union[dict,str]): Prediction data in dictionary or path of json file
         - nms_method (Literal[&#39;iou&#39;], optional): Method for NMS. Defaults to 'iou'.
         - nms_thres (float, optional): Threshold for NMS. Defaults to 0.5.
         - score_thres (float, optional): Score threshold for filtering predictions . Defaults to 0.0.
-        - model_name (Literal[&#39;nuscenes&#39;,&#39;kitti&#39;,&#39;yolo2d&#39;], optional): Name of Object detection Model. Defaults to 'yolo2d'.
+        - model_name (Literal[&#39;nuscenes&#39;,&#39;kitti&#39;,&#39;yolo2d_v11&#39;], optional): Name of Object detection Model. Defaults to 'yolo2d_v11'.
 
     Returns:
         - dict: AP for each class and TP mask for all images
@@ -410,10 +371,14 @@ def validate(
     class_encodings, class_decodings = class_encoder_and_decoder(model_name)
 
     # Parse GT
-    if model_name == 'yolo2d':
-        gt_data = parse_gt_jsons(gt_dir, class_encodings, class_decodings)
+    if model_name in ['yolo2d_v11','yolo2d_v9']:
+        if isinstance(gt, str):
+            gt_data = parse_gt_jsons(gt, class_encodings, class_decodings)
+        else:
+            gt_data = gt
+
     else:     # Load from json file
-        with open(gt_dir) as f:
+        with open(gt) as f:
             gt_data = json.load(f)
 
     # Load prediction data from json file
@@ -426,7 +391,7 @@ def validate(
     AP_sequence, tp_data_seq = cal_AP_img_sequence(
         gt_data=gt_data, 
         pred_data=pred_data, 
-        nms_method='iou', 
+        nms_method=nms_method, 
         nms_thres=nms_thres,
         score_thres=score_thres, 
         )
@@ -439,4 +404,3 @@ def validate(
     print(f"Average mAP of sequence: {round( np.nanmean([val['ap'] for val in AP_sequence.values()]) , 2)}")
 
     return AP_sequence, tp_data_seq
-
