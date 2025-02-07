@@ -27,9 +27,9 @@ pip install -r ./submodule/YOLOv9/requirements.txt
 
 ```
 
-2. Run visualization script (example) [Kitti360](scripts/Img_EvaluateAnalysis.py)
+2. Run visualization script (example) [YOLOv9](scripts/Img_EvaluateAnalysis.py)
 ```
-python scripts/Img_EvaluateAnalysis.py --checkpoint <add checkpoint path> --model_name yolo2d --image_dir <image dataset dir> --ann_dir <annotation .jsons dataset dir>
+python scripts/Img_EvaluateAnalysis.py --checkpoint <add checkpoint path> --model_name <model_name> --image_dir <image dataset dir> --ann_dir <annotation .jsons dataset dir>
 ```
 
 ## Folder structure
