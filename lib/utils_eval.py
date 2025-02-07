@@ -176,14 +176,20 @@ def cal_ap(score: np.array, gt_no: int, true_pos: np.array):
     idx = np.argsort(score)[::-1] # indices of sorting in descending order
     true_pos = true_pos[idx] # sort in descending order
 
+    # Calculate precision and recall
     Precision = np.cumsum(true_pos)/np.linspace(1, len(true_pos), len(true_pos))
     Recall = np.cumsum(true_pos)/ gt_no
+
+    # Add a zero at the beginning of Recall and Precision for the first interval
+    Recall = np.concatenate(([0], Recall))
+    Precision = np.concatenate(([1], Precision))
 
     # Ensure no NaN values in Precision and Recall
     Precision = np.nan_to_num(Precision)
     Recall = np.nan_to_num(Recall)
 
-    ap = np.trapz(Precision, Recall) # Area under precision and recall curve
+    # Area under precision and recall curve
+    ap = np.trapezoid(Precision, Recall) 
 
     return ap, Precision, Recall
 
