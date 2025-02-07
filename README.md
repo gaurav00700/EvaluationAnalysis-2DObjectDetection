@@ -7,8 +7,10 @@ This repository contains the scripts with following fatures:-
 
 ## TODO
 - [ ] Add Preview section.
-- [ ] Add funtionality for more object detection frameworks. 
-- [ ] Add requirement.txt file. 
+- [x] Add requirement.txt file. 
+- [x] Support for YOLOv9
+- [x] Support for YOLOv11
+- [ ] Support for mmdetection
 
 ## Getting started
 1. Setup the environment
@@ -16,12 +18,12 @@ This repository contains the scripts with following fatures:-
 # Clone the repo
 git clone --recursive https://github.com/gaurav00700/EvaluationAnalysis-2DObjectDetection.git
 
-#Create the Python environment
+# Create the Python environment
 conda create -n eval_img python=3.10 -y
 conda activate eval_img
 
-#Install using requirements
-pip install -r requirements.txt
+# Install requirements as per the framework (below is example of YOLOv9)
+pip install -r ./submodule/YOLOv9/requirements.txt
 
 ```
 
@@ -42,6 +44,7 @@ python scripts/Img_EvaluateAnalysis.py --checkpoint <add checkpoint path> --mode
 │ ├── evaluation_img.py
 │ ├── utils_eval.py
 │ ├── visualization.py 
+│ ├── ...
 ├── scripts
 │ ├── Img_EvaluateAnalysis.py
 │ ├── ...
